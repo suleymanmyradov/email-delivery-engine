@@ -1,0 +1,90 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: ede-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ede
+      POSTGRES_PASSWORD: ede
+      POSTGRES_DB: email_delivery_engine
+    ports:
+      - "5432:5432"
+    volumes:
+      - ede-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ede -d email_delivery_engine"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: ede-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - ede-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # One-shot: apply migrations and seed reference data, then exit.
+  migrate:
+    build: ./control-plane
+    container_name: ede-migrate
+    environment:
+      DATABASE_URL: postgresql://ede:ede@postgres:5432/email_delivery_engine
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: sh -c "npx drizzle-kit migrate && npx tsx src/db/seed.ts"
+    restart: "no"
+
+  control-plane:
+    build: ./control-plane
+    container_name: ede-control-plane
+    environment:
+      DATABASE_URL: postgresql://ede:ede@postgres:5432/email_delivery_engine
+      REDIS_URL: redis://redis:6379
+      PORT: "3000"
+      QUEUE_STREAM: messages
+      QUEUE_GROUP: worker
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  worker:
+    build: ./data-plane
+    container_name: ede-worker
+    environment:
+      DATABASE_URL: postgresql://ede:ede@postgres:5432/email_delivery_engine
+      REDIS_URL: redis://redis:6379
+      QUEUE_STREAM: messages
+      QUEUE_GROUP: worker
+      METRICS_ADDR: ":9100"
+      MAX_ATTEMPTS: "4"
+    ports:
+      - "9100:9100"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  ede-postgres-data:
+  ede-redis-data:
