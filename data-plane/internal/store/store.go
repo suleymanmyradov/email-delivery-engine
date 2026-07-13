@@ -19,6 +19,7 @@ type Message struct {
 	ToEmail         string
 	RecipientDomain string
 	MailboxProvider string
+	Type            string
 	Subject         string
 	HTML            string
 	Status          string
@@ -107,10 +108,14 @@ func (s *Store) Close() error {
 // GetMessageForProcessing fetches a message and locks it for processing.
 // Returns nil if the message is already in a terminal state.
 func (s *Store) GetMessageForProcessing(ctx context.Context, messageID string) (*Message, error) {
+	// Nullable text columns are COALESCE'd to '' so a NULL (allowed by the
+	// schema) scans cleanly into the string fields rather than erroring.
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, customer_id, from_email, from_domain, to_email, recipient_domain,
-		       mailbox_provider, subject, html, status, route_id, ip_pool_id,
-		       attempt_count, next_attempt_at, created_at, updated_at
+		SELECT id, customer_id, from_email, COALESCE(from_domain, ''), to_email,
+		       COALESCE(recipient_domain, ''), COALESCE(mailbox_provider, ''),
+		       type, COALESCE(subject, ''), COALESCE(html, ''), status,
+		       route_id, ip_pool_id, attempt_count, next_attempt_at,
+		       created_at, updated_at
 		FROM messages WHERE id = $1 FOR UPDATE SKIP LOCKED`,
 		messageID,
 	)
@@ -118,7 +123,7 @@ func (s *Store) GetMessageForProcessing(ctx context.Context, messageID string) (
 	var m Message
 	err := row.Scan(
 		&m.ID, &m.CustomerID, &m.FromEmail, &m.FromDomain, &m.ToEmail,
-		&m.RecipientDomain, &m.MailboxProvider, &m.Subject, &m.HTML,
+		&m.RecipientDomain, &m.MailboxProvider, &m.Type, &m.Subject, &m.HTML,
 		&m.Status, &m.RouteID, &m.IPPoolID, &m.AttemptCount,
 		&m.NextAttemptAt, &m.CreatedAt, &m.UpdatedAt,
 	)
@@ -375,23 +380,28 @@ func (s *Store) GetDeferredMessagesReady(ctx context.Context, limit int) ([]stri
 	return ids, rows.Err()
 }
 
-// CountSendsToday returns the number of messages sent via a pool today.
+// CountSendsToday returns the number of delivery attempts made via a pool
+// today. Counting delivery_attempts (not messages) means the number reflects
+// actual sends, so warmup/daily caps allow up to `cap` sends rather than
+// blocking everything once more than `cap` messages have been created.
 func (s *Store) CountSendsToday(ctx context.Context, poolID int) (int, error) {
 	var count int
 	err := s.db.QueryRowContext(ctx,
-		`SELECT count(*) FROM messages
-		 WHERE ip_pool_id = $1 AND created_at >= CURRENT_DATE`,
+		`SELECT count(*) FROM delivery_attempts
+		 WHERE ip_pool_id = $1 AND started_at >= CURRENT_DATE`,
 		poolID,
 	).Scan(&count)
 	return count, err
 }
 
-// CountCustomerSendsToday returns the number of messages a customer sent today.
+// CountCustomerSendsToday returns the number of delivery attempts a customer
+// made today (see CountSendsToday for why this counts attempts, not messages).
 func (s *Store) CountCustomerSendsToday(ctx context.Context, customerID string) (int, error) {
 	var count int
 	err := s.db.QueryRowContext(ctx,
-		`SELECT count(*) FROM messages
-		 WHERE customer_id = $1 AND created_at >= CURRENT_DATE`,
+		`SELECT count(*) FROM delivery_attempts da
+		 JOIN messages m ON da.message_id = m.id
+		 WHERE m.customer_id = $1 AND da.started_at >= CURRENT_DATE`,
 		customerID,
 	).Scan(&count)
 	return count, err

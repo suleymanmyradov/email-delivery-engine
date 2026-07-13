@@ -87,13 +87,22 @@ func (p *Processor) Process(ctx context.Context, messageID string) error {
 		return p.terminate(ctx, msg, "failed", "bounced", "", classificationMeta("no_customer"), log)
 	}
 
-	// 1. Abuse control — hard block.
+	// 1. Abuse control — hard block on all sending.
 	if customer.SendingState == "blocked_from_sending" {
 		metrics.Inc("abuse_blocks_total")
 		log.Info("blocked by abuse control", "sending_state", customer.SendingState)
 		return p.terminateEvent(ctx, msg, "blocked", "blocked_by_abuse_control",
 			"", sql.NullInt64{}, "", "customer_blocked_from_sending",
 			map[string]any{"sending_state": customer.SendingState}, log)
+	}
+
+	// 1b. Marketing block — transactional mail still flows, marketing does not.
+	if customer.SendingState == "blocked_from_marketing" && msg.Type == "marketing" {
+		metrics.Inc("abuse_blocks_total")
+		log.Info("marketing blocked by abuse control", "sending_state", customer.SendingState, "type", msg.Type)
+		return p.terminateEvent(ctx, msg, "blocked", "blocked_by_abuse_control",
+			"", sql.NullInt64{}, "", "customer_blocked_from_marketing",
+			map[string]any{"sending_state": customer.SendingState, "type": msg.Type}, log)
 	}
 
 	// 2. Suppression list.
@@ -115,9 +124,26 @@ func (p *Processor) Process(ctx context.Context, messageID string) error {
 		return p.terminate(ctx, msg, "failed", "bounced", "", classificationMeta("no_route"), log)
 	}
 	log = log.With("route_id", decision.Route.ID, "ip_pool_id", decision.Pool.ID)
-
-	// 4. Warmup / daily cap for the chosen pool.
 	now := time.Now()
+
+	// 4. Customer daily send cap. Counts messages created today (a proxy for
+	// "sent today" in v0); over-cap messages defer to the next window rather
+	// than fail. Reschedules without consuming a delivery attempt.
+	if customer.DailySendCap > 0 {
+		sentToday, err := p.st.CountCustomerSendsToday(ctx, msg.CustomerID)
+		if err != nil {
+			return fmt.Errorf("count customer sends: %w", err)
+		}
+		if sentToday >= customer.DailySendCap {
+			metrics.Inc("messages_throttled_total")
+			log.Info("customer at daily send cap; deferring",
+				"daily_send_cap", customer.DailySendCap, "sent_today", sentToday)
+			return p.reschedule(ctx, msg, decision, now.Add(time.Hour), "daily_send_cap",
+				map[string]any{"daily_send_cap": customer.DailySendCap, "sent_today": sentToday}, log)
+		}
+	}
+
+	// 5. Warmup / daily cap for the chosen pool.
 	if cap := route.WarmupCap(decision.Pool, now); cap >= 0 {
 		sent, err := p.st.CountSendsToday(ctx, decision.Pool.ID)
 		if err != nil {
@@ -134,7 +160,7 @@ func (p *Processor) Process(ctx context.Context, messageID string) error {
 		}
 	}
 
-	// 5. Rate-limit throttles (customer / provider / ip_pool scopes).
+	// 6. Rate-limit throttles (customer / provider / domain / ip_pool scopes).
 	if throttled, scope, err := p.checkThrottles(ctx, msg, decision); err != nil {
 		return err
 	} else if throttled {
@@ -144,7 +170,7 @@ func (p *Processor) Process(ctx context.Context, messageID string) error {
 			map[string]any{"throttle_scope": scope}, log)
 	}
 
-	// 6. Attempt the (simulated) send.
+	// 7. Attempt the (simulated) send.
 	attempt := msg.AttemptCount + 1
 	if err := p.st.UpdateMessageStatus(ctx, msg.ID, "sending",
 		intToNull(decision.Route.ID), intToNull(decision.Pool.ID), attempt, sql.NullTime{}); err != nil {

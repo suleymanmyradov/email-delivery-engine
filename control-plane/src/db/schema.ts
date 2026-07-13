@@ -44,6 +44,11 @@ export const messageEventTypeEnum = pgEnum("message_event_type", [
   "blocked_by_abuse_control",
 ]);
 
+export const messageTypeEnum = pgEnum("message_type", [
+  "transactional",
+  "marketing",
+]);
+
 export const ipPoolTypeEnum = pgEnum("ip_pool_type", [
   "shared",
   "dedicated",
@@ -107,6 +112,7 @@ export const messagesTable = pgTable("messages", {
   toEmail: text().notNull(),
   recipientDomain: text(),
   mailboxProvider: text(),
+  type: messageTypeEnum("type").notNull().default("transactional"),
   subject: text(),
   html: text(),
   status: messageStatusEnum("status").notNull().default("queued"),

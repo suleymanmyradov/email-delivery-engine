@@ -1,5 +1,5 @@
 {
-  "id": "d02dc007-e665-4dd1-8674-8dab28c37d15",
+  "id": "4a1f341d-134e-41bd-a8ce-ee0490b89259",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -442,6 +442,14 @@
           "primaryKey": false,
           "notNull": false
         },
+        "type": {
+          "name": "type",
+          "type": "message_type",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'transactional'"
+        },
         "subject": {
           "name": "subject",
           "type": "text",
@@ -847,6 +855,14 @@
         "suppressed",
         "throttled",
         "blocked"
+      ]
+    },
+    "public.message_type": {
+      "name": "message_type",
+      "schema": "public",
+      "values": [
+        "transactional",
+        "marketing"
       ]
     },
     "public.provider_reputation_state": {

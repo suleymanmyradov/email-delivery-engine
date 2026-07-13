@@ -108,9 +108,14 @@ curl -sX POST http://localhost:3000/messages \
     "to": "user@gmail.com",
     "subject": "Welcome",
     "html": "<p>Hello</p>",
+    "type": "transactional",
     "idempotency_key": "msg-abc-123"
   }'
 ```
+
+`type` is optional (`transactional` | `marketing`, default `transactional`). A
+customer in the `blocked_from_marketing` state still receives transactional
+mail but has marketing mail blocked.
 
 Re-sending with the same `idempotency_key` returns the original message instead
 of creating a duplicate.
@@ -151,7 +156,10 @@ curl -s http://localhost:3000/messages/<id>/events | jq
 - **Routing + IP pools** — dedicated pool if the customer has one, else a shared
   pool; **warmup** caps (50/100/250/500/1000 per day) enforced before sending.
 - **Anti-abuse** — customers over a 24h hard-bounce threshold are moved to
-  `limited` (slow down, don't hard-block); `blocked_from_sending` is rejected.
+  `limited` (slow down, don't hard-block); `blocked_from_sending` is rejected at
+  accept; `blocked_from_marketing` blocks marketing but allows transactional.
+- **Daily send cap** — a per-customer cap on send *attempts* per day; over-cap
+  messages defer to the next window instead of failing.
 - **Suppression** — hard bounces add the recipient to a per-customer list;
   future sends to them are skipped.
 - **Observability** — structured JSON logs (`request_id`, `message_id`,
@@ -162,7 +170,17 @@ curl -s http://localhost:3000/messages/<id>/events | jq
 ## Tests
 
 ```bash
-cd data-plane && go test ./...   # classifier, backoff schedule + jitter, warmup caps
+# Data plane — unit tests (classifier, backoff schedule + jitter, warmup caps)
+cd data-plane && go test ./...
+
+# Control plane — unit tests (mailbox detection, request validation, snake_case)
+cd control-plane && npm test
+
+# Data plane — integration tests against a live Postgres + Redis (see the stack above)
+cd data-plane && \
+  TEST_DATABASE_URL=postgresql://ede:ede@localhost:5432/email_delivery_engine \
+  TEST_REDIS_URL=redis://localhost:6379 \
+  go test -tags=integration ./internal/worker/...
 ```
 
 ## Docs

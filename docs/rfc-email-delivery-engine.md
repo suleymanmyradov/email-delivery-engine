@@ -174,25 +174,32 @@ For each message the worker runs, in this exact order:
 2. **Load customer.** Missing customer → `failed`.
 3. **Abuse hard block.** `sending_state == blocked_from_sending` → status `blocked`,
    event `blocked_by_abuse_control`, increment `abuse_blocks_total`.
-4. **Suppression check.** Recipient on the customer's suppression list → status
+4. **Marketing block.** `sending_state == blocked_from_marketing` **and**
+   `type == marketing` → status `blocked`. Transactional mail from the same customer
+   still flows — the block is scoped to message type.
+5. **Suppression check.** Recipient on the customer's suppression list → status
    `suppressed`, never attempt a send.
-5. **Route / IP-pool selection.** Choose dedicated pool if the customer has one with a
+6. **Route / IP-pool selection.** Choose dedicated pool if the customer has one with a
    route for the provider; else the first shared-pool route. No enabled route →
    `failed`.
-6. **Warmup / daily cap.** If the chosen pool is over its cap, reschedule
+7. **Customer daily send cap.** If the customer has made ≥ `daily_send_cap` send
+   attempts today, reschedule (`deferred`, +1h) **without consuming an attempt**.
+8. **Warmup / pool cap.** If the chosen pool is over its warmup/daily cap, reschedule
    (`deferred`, +1h) **without consuming an attempt** — this is capacity, not failure.
-7. **Rate-limit throttles.** Check customer / provider / domain / IP-pool scopes; if
+9. **Rate-limit throttles.** Check customer / provider / domain / IP-pool scopes; if
    any is over limit, reschedule (`deferred`, +1m) **without consuming an attempt**.
-8. **Attempt send.** Mark `sending`, write `sending_attempted` event, increment
-   attempt, increment `delivery_attempts_total`.
-9. **Simulate delivery** against the provider's reputation state.
-10. **Persist the attempt** (`delivery_attempts` row with SMTP code + raw response).
-11. **Classify** the response.
-12. **Act:** deliver / bounce+suppress / fail / defer+schedule-retry / dead-letter.
+10. **Attempt send.** Mark `sending`, write `sending_attempted` event, increment
+    attempt, increment `delivery_attempts_total`.
+11. **Simulate delivery** against the provider's reputation state.
+12. **Persist the attempt** (`delivery_attempts` row with SMTP code + raw response).
+13. **Classify** the response.
+14. **Act:** deliver / bounce+suppress / fail / defer+schedule-retry / dead-letter.
 
-The distinction in steps 6–7 versus 8+ is deliberate: **capacity limits reschedule
+The distinction in steps 7–9 versus 10+ is deliberate: **capacity limits reschedule
 without burning a retry; delivery failures burn a retry.** A message throttled 50
-times has still made zero delivery attempts.
+times has still made zero delivery attempts. Daily/warmup caps count actual send
+attempts (from `delivery_attempts`), so a cap of _N_ permits _N_ sends per day rather
+than blocking a customer that merely queued more than _N_ messages.
 
 ## Retry, backoff, and dead-lettering
 
@@ -263,10 +270,15 @@ deterministic for v0.
 ## Anti-abuse
 
 Philosophy borrowed from Resend's stance: protect good senders, minimize friction.
-Two mechanisms:
+Four mechanisms, escalating in severity:
 
 - **Hard block:** a customer in `blocked_from_sending` is rejected at accept time
   (control plane, `403`) and again defensively in the worker (status `blocked`).
+- **Marketing block:** a customer in `blocked_from_marketing` still sends
+  transactional mail; only `type == marketing` messages are blocked. This lets an
+  abusive marketing pattern be contained without breaking password resets or receipts.
+- **Daily send cap:** each customer has a `daily_send_cap`; once they reach it, further
+  messages defer to the next window rather than fail — a ceiling, not a rejection.
 - **Soft limit:** a periodic (60s) abuse sweep computes each `trusted`/`new`
   customer's 24h hard-bounce rate; if it exceeds 20% the customer is moved to
   `limited` (slow down) rather than blocked outright.

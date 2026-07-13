@@ -1,6 +1,7 @@
 CREATE TYPE "public"."ip_pool_type" AS ENUM('shared', 'dedicated');--> statement-breakpoint
 CREATE TYPE "public"."message_event_type" AS ENUM('accepted', 'queued', 'throttled', 'sending_attempted', 'deferred', 'delivered', 'bounced', 'retry_scheduled', 'dead_lettered', 'suppressed', 'blocked_by_abuse_control');--> statement-breakpoint
 CREATE TYPE "public"."message_status" AS ENUM('queued', 'sending', 'deferred', 'delivered', 'bounced', 'failed', 'dead_lettered', 'suppressed', 'throttled', 'blocked');--> statement-breakpoint
+CREATE TYPE "public"."message_type" AS ENUM('transactional', 'marketing');--> statement-breakpoint
 CREATE TYPE "public"."provider_reputation_state" AS ENUM('healthy', 'degraded', 'down');--> statement-breakpoint
 CREATE TYPE "public"."sending_state" AS ENUM('trusted', 'new', 'limited', 'blocked_from_marketing', 'blocked_from_sending');--> statement-breakpoint
 CREATE TYPE "public"."throttle_scope" AS ENUM('customer', 'domain', 'provider', 'ip_pool');--> statement-breakpoint
@@ -61,6 +62,7 @@ CREATE TABLE "messages" (
 	"to_email" text NOT NULL,
 	"recipient_domain" text,
 	"mailbox_provider" text,
+	"type" "message_type" DEFAULT 'transactional' NOT NULL,
 	"subject" text,
 	"html" text,
 	"status" "message_status" DEFAULT 'queued' NOT NULL,

@@ -1,5 +1,4 @@
 import { Router } from "express";
-import { z } from "zod";
 import { randomUUID } from "crypto";
 import { db, pool } from "../db";
 import { messagesTable, messageEventsTable } from "../db/schema";
@@ -8,18 +7,10 @@ import { detectMailboxProvider, extractDomain } from "../lib/mailbox";
 import { enqueueMessage } from "../lib/queue";
 import { incCounter } from "../lib/metrics";
 import { log } from "../lib/logging";
+import { createMessageSchema } from "../lib/schemas";
 import type { RequestWithId } from "../middleware/requestId";
 
 export const messagesRouter = Router();
-
-const createMessageSchema = z.object({
-  customer_id: z.string().min(1),
-  from: z.string().email(),
-  to: z.string().email(),
-  subject: z.string().min(1),
-  html: z.string().min(1),
-  idempotency_key: z.string().min(1),
-});
 
 /**
  * POST /messages
@@ -99,8 +90,8 @@ messagesRouter.post("/", async (req: RequestWithId, res) => {
     await client.query(
       `INSERT INTO messages
         (id, customer_id, from_email, from_domain, to_email, recipient_domain,
-         mailbox_provider, subject, html, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'queued')`,
+         mailbox_provider, type, subject, html, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'queued')`,
       [
         messageId,
         body.customer_id,
@@ -109,6 +100,7 @@ messagesRouter.post("/", async (req: RequestWithId, res) => {
         body.to,
         recipientDomain,
         mailboxProvider,
+        body.type,
         body.subject,
         body.html,
       ],
